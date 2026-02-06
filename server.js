@@ -24,6 +24,15 @@ const DATABASE_URL = process.env.DATABASE_URL || "";
 const PG_SSL = process.env.PG_SSL === "true";
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
 
+try {
+  const dbHost = process.env.DATABASE_URL
+    ? new URL(process.env.DATABASE_URL).hostname
+    : "missing";
+  console.log("DB host:", dbHost);
+} catch (err) {
+  console.log("DB host: invalid DATABASE_URL");
+}
+
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID || "";
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN || "";
 const TWILIO_VERIFY_SERVICE_SID = process.env.TWILIO_VERIFY_SERVICE_SID || "";

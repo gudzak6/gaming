@@ -87,9 +87,6 @@ function AuthScreen({ onAuthed }) {
       setError(data.error || "Failed to request OTP.");
       return;
     }
-    if (data.devOtp) {
-      setOtp(data.devOtp);
-    }
     setStep("verify");
   }
 

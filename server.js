@@ -1,6 +1,7 @@
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
+const dns = require("dns");
 const express = require("express");
 const http = require("http");
 require("dotenv").config({ path: path.join(__dirname, "admin", "local.env") });
@@ -68,16 +69,71 @@ const usePostgres = Boolean(DATABASE_URL);
 let db = null;
 let pgPool = null;
 
-if (usePostgres) {
-  pgPool = new Pool({
-    connectionString: DATABASE_URL,
-    ssl: PG_SSL ? { rejectUnauthorized: false } : undefined,
-  });
-} else {
+if (!usePostgres) {
   if (!fs.existsSync(DB_PATH)) {
     fs.closeSync(fs.openSync(DB_PATH, "w"));
   }
   db = new sqlite3.Database(DB_PATH);
+}
+
+function buildPgSslConfig() {
+  return PG_SSL ? { rejectUnauthorized: false } : undefined;
+}
+
+function poolConfigFromUrl(connectionString, hostOverride) {
+  const url = new URL(connectionString);
+  const config = {
+    host: hostOverride || url.hostname,
+    port: url.port ? Number(url.port) : 5432,
+    ssl: buildPgSslConfig(),
+  };
+  const database = url.pathname ? url.pathname.slice(1) : "";
+  if (database) config.database = database;
+  if (url.username) config.user = decodeURIComponent(url.username);
+  if (url.password) config.password = decodeURIComponent(url.password);
+  return config;
+}
+
+async function createPgPoolWithIpv4(connectionString) {
+  const url = new URL(connectionString);
+  if (!url.hostname) {
+    return new Pool({
+      connectionString,
+      ssl: buildPgSslConfig(),
+    });
+  }
+  const { address } = await dns.promises.lookup(url.hostname, { family: 4 });
+  return new Pool(poolConfigFromUrl(connectionString, address));
+}
+
+function shouldRetryWithIpv4(err) {
+  if (!err) return false;
+  if (err.code === "ENETUNREACH") return true;
+  const message = String(err.message || "");
+  return message.includes("ENETUNREACH");
+}
+
+async function initPostgresPool() {
+  const primary = new Pool({
+    connectionString: DATABASE_URL,
+    ssl: buildPgSslConfig(),
+  });
+  try {
+    await primary.query("SELECT 1");
+    return primary;
+  } catch (err) {
+    if (!shouldRetryWithIpv4(err)) throw err;
+    console.warn("Postgres IPv6 unreachable; retrying with IPv4.");
+    try {
+      const ipv4Pool = await createPgPoolWithIpv4(DATABASE_URL);
+      await ipv4Pool.query("SELECT 1");
+      await primary.end().catch(() => {});
+      return ipv4Pool;
+    } catch (err2) {
+      await primary.end().catch(() => {});
+      throw err2;
+    }
+  }
 }
 
 const twilioClient =
@@ -755,6 +811,9 @@ app.get("*", (req, res) => {
 });
 
 async function start() {
+  if (usePostgres) {
+    pgPool = await initPostgresPool();
+  }
   await initDb();
   await loadOrCreateShow();
   scheduleShowLoop();
